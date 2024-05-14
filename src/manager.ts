@@ -1,0 +1,196 @@
+import simpleGit, { SimpleGit } from 'simple-git';
+import { prompt } from './prompt';
+import { exec } from 'child_process';
+import { generateDirectoryTreeJSON } from './overview';
+import { existsSync } from 'fs';
+import { OpenAI } from 'openai';
+
+import _ from 'lodash';
+
+
+export type MeristemIssue = {
+  description: string
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+  branchName: string
+  lastModified: Date
+  error?: string
+  completed: boolean
+}
+
+export type MeristemConfig = {
+  active: MeristemIssue,
+  archive: MeristemIssue[]
+}
+
+
+export class Manager {
+  
+  activeIssue: MeristemIssue;
+  archive: MeristemIssue[] = [];
+
+  constructor(
+    public config: MeristemConfig,
+    public setConfig: (config: MeristemConfig) => void
+  ) {
+    // add new entry into meristem-issues.yml
+    this.activeIssue = this.config.active;
+    this.archive = this.config.archive;    
+
+  }
+
+
+  async updateConfig() {
+
+    this.setConfig({
+      ...this.config,
+      active: this.activeIssue,
+      archive: this.archive
+    });
+  }
+
+  async updateIssue(issue: MeristemIssue, updatedIssue: Partial<MeristemIssue>) {
+
+
+    this.activeIssue =  { ...issue, ...updatedIssue };
+    this.updateConfig();
+  }
+
+  async workOnIssue(issue: MeristemIssue) {
+
+    
+    // check if branch exists, if so check it out else create it
+    await createOrCheckoutBranch(`meristem/${issue.branchName}`);
+
+    const overview = await generateDirectoryTreeJSON(process.cwd());
+
+    console.log("overview -- ", overview);
+
+    const diff = await promptForDiff(issue.description, [{
+        role: "user",
+        content: `The following is an overview of the project: ${overview}`
+    }]);
+
+    await applyChanges(diff);
+
+    await this.runTests()
+
+
+  }
+
+
+  async runTests() {
+
+    const { success, error } = await new Promise<{ success: boolean, error: string }>((resolve, reject) => {
+      const childProcess = exec('npm test');
+      childProcess.on('exit', (code) => {
+        if (code === 0) {
+          resolve({ success: true, error: '' });
+        } else {
+          resolve({ success: false, error: 'Tests failed' });
+        }
+      });
+    });
+
+    if (!success) {
+      this.updateIssue(this.activeIssue, { error });
+    }
+
+  }
+  
+
+  async getActiveIssue() {
+    const activeIssues = this.config.active;
+    return activeIssues;
+  }
+
+  async markIssueAsComplete() {
+    this.activeIssue.completed = true;
+    this.archive.push(this.activeIssue);
+    this.updateConfig();
+  }
+
+  async run() {
+    this.getActiveIssue().then((issue: MeristemIssue) => {
+        this.workOnIssue(issue);
+        return 
+      });
+
+  }
+
+
+}
+
+
+
+async function promptForDiff(description: string, messages: { role: "system" | "user", content: string}[] ): Promise<string> {
+    const newMessages: { role: "system" | "user", content: string}[] = [
+        {
+            role: "system",
+            content: `You are a helpful assistant that does one of the following actions by prominently
+            displaying the number of the action with the required information in json format.  Please only 
+            output parseable JSON.
+
+            (1) generates git diff patches that adds, modifies, or removes tested code in response to user issue description, as well as 
+                adding or updating .meristem.yml files, which must include at least a single key "description" along with a long string 
+                value summarizing the directory contents using only a parseable git diff format.
+
+            (2) prompts user for the contents of a certain file or directory with the following format:
+                show path: <path> 
+
+            Use command #2 until you have the information you need, and then execute #1.
+            `
+        },
+        {
+            role: "user",
+            content: `The following is an issue related to a codebase you have access to. ${description}
+            `
+        }
+    ];
+
+    const result = await prompt(messages);
+    
+ 
+
+    return result;
+}
+
+async function applyChanges(diff: string): Promise<void> {
+    const childProcess = exec(`git apply - `);
+    childProcess.stdin?.write(diff);
+    childProcess.stdin?.end();
+    const { stdout, stderr } = await new Promise<{ stdout: string, stderr: string }>((resolve, reject) => {
+        childProcess.on('exit', (code) => {
+            if (code === 0) {
+                resolve({ stdout: '', stderr: '' });
+            } else {
+                reject(new Error(`Failed to apply changes: ${stderr}`));
+            }
+        });
+    });
+    if (stderr) {
+        throw new Error(`Failed to apply changes: ${stderr}`);
+    }
+}
+
+async function createOrCheckoutBranch(branchName: string): Promise<void> {
+    const git: SimpleGit = simpleGit();
+    await git.checkoutLocalBranch(branchName);
+}
+
+async function addAndCommitChanges(branchName: string, message: string): Promise<void> {
+  const git: SimpleGit = simpleGit();
+  await git.add('./*');
+  await git.commit(message);
+  await git.push(['-u', 'origin', branchName]);
+}
+
+async function readStdin(): Promise<string> {
+    const stdin = process.stdin;
+    stdin.setEncoding('utf-8');
+
+    let input = '';
+    for await (const chunk of stdin) {
+        input += chunk;
+    }
+    return input;
+}

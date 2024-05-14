@@ -1,3 +1,5 @@
+NPX = (shell which npm)
+
 
 run: 
 	npm run start
@@ -17,11 +19,13 @@ setup:
 
 build: 
 	npm run build
+	chmod +x ./bin/index.js
 
 check:
 	make format
 	make test
 	make build
+
 
 
 m ?= wip
