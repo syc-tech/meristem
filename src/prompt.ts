@@ -1,18 +1,12 @@
-
 import OpenAI from 'openai';
-
 import { config } from 'dotenv';
-
 import { generateFileInfo } from './overview';
-
 import { exec } from 'child_process';
 
-
-config({ path: `${process.cwd()}/.env`});
-
+config({ path: `${process.cwd()}/.env` });
 
 if (!process.env.OPENAI_API_KEY) {
-  throw new Error('OpenAI API key not found')
+  throw new Error('OpenAI API key not found');
 }
 
 const configuration = {
@@ -21,108 +15,97 @@ const configuration = {
 
 const openai = new OpenAI(configuration);
 
+export const prompt = async (messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<{ result: string, messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] }> => {
 
-export const prompt = async (messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] ): Promise<string> => {
+  console.log("Prompting for diff...  ----\n", messages[messages.length - 1].content);
 
-
-  const fullResponse = await getFullResponse(messages, [])
+  const fullResponse = await getFullResponse(messages, []);
 
 
   if (!fullResponse) {
-    throw new Error('No choices provided')
+    throw new Error('No choices provided');
   }
 
-  const { success, error } = await checkDiff(fullResponse)
+  const { success, error } = await checkDiff(fullResponse);
+
+  const { path, error: pathError } = await parsePath(fullResponse);
 
   if (success) {
-
-    return fullResponse
-
-  } else if (fullResponse.match(/\(2\)/)) {
-    const { path, error } = await parsePath(fullResponse)
-    const fileContents = await generateFileInfo(path)
-    return prompt([...messages, {role: "system", content: fullResponse }, { role: "user", content: `
-      Here are the contents of the file at ${path}: \n${fileContents}
-    ` }])
+    return { result: fullResponse, messages: [...messages, { role: "system", content: fullResponse }] };
+  } else if ( path && !pathError) {
     
-
+    const fileContents = await generateFileInfo(path);
+    console.log("File contents for: ", path);
+    return prompt([...messages, { role: "system", content: fullResponse }, { role: "user", content: `Here are the contents of the file at ${path}: \n${fileContents}` }]);
   } else {
-    return prompt([...messages, { role: "user", content: `
-      Please provide a response that is either a parseable git diff, or 
-    ` }])
+    console.log("Invalid diff provided, prompting again...", fullResponse);
+    return prompt([...messages, { role: "user", content: `Please provide a response that is either ONLY a parseable git diff, or a request for a file's contents with the following format: \`show path: <path>\`` }]);
+  }
+};
+
+const getFullResponse = async (messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[], pastResponses: string[]): Promise<string> => {
+  if (!messages || messages.length === 0) {
+    throw new Error('No messages provided');
   }
 
-
-}
-
-
-const getFullResponse = async (messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[], pastResponses: string[] ): Promise<string> => {
+  console.log("Continuing last prompt...  ----\n", messages[messages.length - 1].content)
 
   const response: OpenAI.Chat.Completions.ChatCompletion = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo-1106',
-    // messages: [
-    //   {
-    //     role: "system",
-    //     content: systemPrompt
-    //   },
-    //   {
-    //     role: "user",
-    //     content: userPrompt
-    //   }
-    // ],
+    model: 'gpt-4',
     messages,
-  })
+  });
 
-  const choice = response.choices[0]
-  const finishReason = choice.finish_reason
+  const choice = response.choices[0];
+  const finishReason = choice.finish_reason;
 
   if (finishReason === 'stop') {
-    if (choice.message.content){
-      return choice.message.content
+    console.log("Stopping prompt...  ----\n", response.choices);
+    if (choice.message.content) {
+      return choice.message.content;
     }
   }
 
-
-  const result = getFullResponse(
+  const result = await getFullResponse(
     [
-      ...messages, 
-      { role: "system", content: `you were cut off while saying the following, please continue from there: ${choice.message.content}` }, 
+      ...messages,
+      // { role: "system", content: `You were cut off while generating the following response, please continue from there: ${choice.message.content}` },
+      { role: "user", content: `` },
     ],
     choice.message.content ? [...pastResponses, choice.message.content] : pastResponses
-  )
+  );
 
-  return `${choice.message}${result}`
- 
-
-}
-
+  return `${choice.message.content}${result}`;
+};
 
 const parsePath = async (fullResponse: string): Promise<{ path: string, error: string }> => {
-  const path = fullResponse.match(/show path: (.*)/)?.[1]
+  const path = fullResponse.match(/show path: (.*)/)?.[1];
 
   if (!path) {
-    return { path: '', error: 'No path provided' }
+    return { path: '', error: 'No path provided' };
   }
 
-  return { path, error: '' }
-}
+  return { path, error: '' };
+};
 
 const checkDiff = async (diff: string): Promise<{ success: boolean, error: string }> => {
-  const childProcess = exec(`git apply --check - `);
-  childProcess.stdin?.write(diff);
-  childProcess.stdin?.end();
-  const { stdout, stderr } = await new Promise<{ stdout: string, stderr: string }>((resolve, reject) => {
-      childProcess.on('exit', (code) => {
-          if (code === 0) {
-              resolve({ stdout: '', stderr: '' });
-          } else {
-              reject(new Error(`Failed to apply changes: ${stderr}`));
-          }
-      });
-  });
-  if (stderr) {
-      return { success: false, error: stderr }
-  }
+  return new Promise((resolve, reject) => {
+    const childProcess = exec(`git apply --check -`);
 
-  return { success: true, error: '' }
-}
+    let stderr = '';
+
+    childProcess.stdin?.write(diff);
+    childProcess.stdin?.end();
+
+    childProcess.stderr?.on('data', (data) => {
+      stderr += data;
+    });
+
+    childProcess.on('exit', (code) => {
+      if (code === 0) {
+        resolve({ success: true, error: '' });
+      } else {
+        resolve({ success: false, error: stderr });
+      }
+    });
+  });
+};

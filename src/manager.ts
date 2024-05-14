@@ -43,7 +43,10 @@ export class Manager {
 
     this.setConfig({
       ...this.config,
-      active: this.activeIssue,
+      active: {
+        ...this.activeIssue,
+        lastModified: new Date()
+      },
       archive: this.archive
     });
   }
@@ -57,28 +60,37 @@ export class Manager {
 
   async workOnIssue(issue: MeristemIssue) {
 
-    
+    console.log('working on issue...');
+
+
     // check if branch exists, if so check it out else create it
     await createOrCheckoutBranch(`meristem/${issue.branchName}`);
 
-    const overview = await generateDirectoryTreeJSON(process.cwd());
+    console.log('branch created or checked out...');
 
-    console.log("overview -- ", overview);
+    const errorMessage: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = issue.error ? [{
+      content: `The following error was encountered when attempting to run tests: ${issue.error}`,
+      role: "user"
+    }] : [];
 
-    const diff = await promptForDiff(issue.description, [{
-        role: "user",
-        content: `The following is an overview of the project: ${overview}`
-    }]);
+    console.log(`prompting for diff... ${ issue.error ? `with error --- ${issue.error}` : ''}`);
+
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [...issue.messages, ...errorMessage];
+
+
+
+    const { result: diff, messages: resultMessages } = await promptForDiff(issue.description, messages);
 
     await applyChanges(diff);
 
     await this.runTests()
 
-
   }
 
 
   async runTests() {
+
+    console.log('running tests...');
 
     const { success, error } = await new Promise<{ success: boolean, error: string }>((resolve, reject) => {
       const childProcess = exec('npm test');
@@ -99,7 +111,10 @@ export class Manager {
   
 
   async getActiveIssue() {
-    const activeIssues = this.config.active;
+    const activeIssues = {
+      ...this.config.active,
+      messages: this.config.active.messages ? this.config.active.messages : [],
+    };
     return activeIssues;
   }
 
@@ -111,9 +126,27 @@ export class Manager {
 
   async run() {
     this.getActiveIssue().then((issue: MeristemIssue) => {
-        this.workOnIssue(issue);
-        return 
-      });
+      if (!issue){
+        console.log('issue', issue)
+        throw new Error("No active issue found");
+
+        return
+      }
+
+      if (!issue.branchName) {
+        throw new Error("No branch name found in active issue");
+        return
+      }
+
+      if (!issue.description) {
+        throw new Error("No description found in active issue");
+        return
+      }
+
+
+      this.workOnIssue(issue);
+      return 
+    });
 
   }
 
@@ -122,36 +155,50 @@ export class Manager {
 
 
 
-async function promptForDiff(description: string, messages: { role: "system" | "user", content: string}[] ): Promise<string> {
-    const newMessages: { role: "system" | "user", content: string}[] = [
-        {
-            role: "system",
-            content: `You are a helpful assistant that does one of the following actions by prominently
-            displaying the number of the action with the required information in json format.  Please only 
-            output parseable JSON.
+async function promptForDiff(description: string, messages?: OpenAI.Chat.Completions.ChatCompletionMessageParam[] ): Promise<{ result: string, messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]}> {
 
-            (1) generates git diff patches that adds, modifies, or removes tested code in response to user issue description, as well as 
-                adding or updating .meristem.yml files, which must include at least a single key "description" along with a long string 
-                value summarizing the directory contents using only a parseable git diff format.
 
-            (2) prompts user for the contents of a certain file or directory with the following format:
-                show path: <path> 
+  const overview = await generateDirectoryTreeJSON(process.cwd());
 
-            Use command #2 until you have the information you need, and then execute #1.
-            `
-        },
-        {
-            role: "user",
-            content: `The following is an issue related to a codebase you have access to. ${description}
-            `
-        }
-    ];
+  console.log("overview -- ", overview);
 
-    const result = await prompt(messages);
-    
- 
+  const newMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    {
+        role: "system",
+        content: `You are a helpful assistant that does one of the following actions by prominently
+        displaying the number of the action with the required information in json format.  Please only 
+        output parseable JSON.
 
-    return result;
+        (1) generates git diff patches that adds, modifies, or removes tested code in response to user issue description, as well as 
+            adding or updating .meristem.toml files, which must include at least a single key "description" with the value being a long string 
+            value summarizing the directory contents .  Please output literally nothing except a parseable git diff format.
+
+        (2) prompts user for the contents of a certain file or directory with the following format:
+            show path: \`show path: <path>\` 
+
+        Use the prompt for file contents until you have the information you need, and then execute #1.
+        `
+    },
+    {
+        role: "user",
+        content: `The following is an issue related to a codebase you have access to. ${description}
+        `
+    },
+    {
+      role: "user",
+      content: `The following is an overview of the project code: ${overview}`
+    }
+  
+  ];
+
+  const messagesToPrompt: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = (messages && messages?.length !== 0) ? messages : newMessages;
+
+  const { result, messages: resultMessages } = await prompt( messagesToPrompt ) ;
+
+  
+
+
+  return { result, messages: resultMessages };
 }
 
 async function applyChanges(diff: string): Promise<void> {
@@ -174,7 +221,14 @@ async function applyChanges(diff: string): Promise<void> {
 
 async function createOrCheckoutBranch(branchName: string): Promise<void> {
     const git: SimpleGit = simpleGit();
-    await git.checkoutLocalBranch(branchName);
+    const branches = await git.branch();
+    if (branches.all.includes(branchName)) {
+      await git.checkout(branchName);
+      return;
+    } else {
+      await git.checkoutLocalBranch(branchName);
+      return;
+    }
 }
 
 async function addAndCommitChanges(branchName: string, message: string): Promise<void> {

@@ -1,0 +1,29 @@
+
+
+on:
+
+  workflow_dispatch:
+
+name: Meristem 
+
+jobs:
+  
+
+  lints:
+    concurrency:
+      group: ${{ github.workflow }}-lints-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    name: Lints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: make setup
+

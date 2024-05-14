@@ -1,5 +1,14 @@
 
+#  required fields for active issue
+#   description: string
+#   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+#   branchName: string
+#   lastModified: Date
+#   error?: string
+#   completed: boolean
 
 active:
+  description: Please add a readme with basic info
+  branchName: readme
 
 archived:
