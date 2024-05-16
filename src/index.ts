@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// This file serves as the entry point for the Meristem project, handling configuration loading and initiating the manager.
+
 import { existsSync, writeFileSync, readFileSync } from 'fs';
 import { Manager, MeristemConfig } from './manager';
 import toml from '@iarna/toml';

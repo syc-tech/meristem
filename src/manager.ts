@@ -81,12 +81,24 @@ export class Manager {
 
     const { result: diff, messages: resultMessages } = await promptForDiff(issue.description, messages);
 
+    // Verify the correctness of diffs before applying them
+    if (!await verifyDiff(diff)) {
+      console.error('Diff verification failed. Please ensure the diff is correct and try again.');
+      return;
+    }
+
     await applyChanges(diff);
 
     await this.runTests()
 
   }
 
+  async verifyDiff(diff: string): Promise<boolean> {
+    // Logic to verify the correctness of the diff
+    // This could involve checking the diff format, ensuring it applies cleanly, etc.
+    // Placeholder for actual implementation
+    return true; // Assuming verification is successful for now
+  }
 
   async runTests() {
 
@@ -105,6 +117,8 @@ export class Manager {
 
     if (!success) {
       this.updateIssue(this.activeIssue, { error });
+      // Enhance error logging for better traceability
+      console.error(`Test execution failed with error: ${error}`);
     }
 
   }

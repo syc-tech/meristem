@@ -68,13 +68,12 @@ const getFullResponse = async (messages: OpenAI.Chat.Completions.ChatCompletionM
   const result = await getFullResponse(
     [
       ...messages,
-      // { role: "system", content: `You were cut off while generating the following response, please continue from there: ${choice.message.content}` },
       { role: "user", content: `` },
     ],
     choice.message.content ? [...pastResponses, choice.message.content] : pastResponses
   );
 
-  return `${choice.message.content}${result}`;
+  return pastResponses.concat(choice.message.content ? choice.message.content : '').join('');
 };
 
 const parsePath = async (fullResponse: string): Promise<{ path: string, error: string }> => {
@@ -104,7 +103,7 @@ const checkDiff = async (diff: string): Promise<{ success: boolean, error: strin
       if (code === 0) {
         resolve({ success: true, error: '' });
       } else {
-        resolve({ success: false, error: stderr });
+        resolve({ success: false, error: `Diff check failed with error: ${stderr}` });
       }
     });
   });
